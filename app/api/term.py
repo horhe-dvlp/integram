@@ -8,6 +8,7 @@ from app.db.db import engine, load_sql
 from app.models.term import TermMetadata, TermCreateRequest, TermCreateResponse
 from app.services.term_builder import build_terms_from_rows
 from app.auth.auth import verify_token
+from app.logger import db_logger
 
 
 router = APIRouter()
@@ -117,14 +118,16 @@ async def create_term(payload: TermCreateRequest) -> TermCreateResponse:
                 val=payload.val,
                 warnings="Term already exists"
             )
+            
+        db_logger.exception(f"Unexpected result from post_terms: {result_flag}")
 
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unexpected result: '{result_flag}'"
-        )
-
-    except SQLAlchemyError as _e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database error while executing post_terms. {_e}"
+        )
+        
+    except SQLAlchemyError as _e:
+        db_logger.exception(f"Database error while executing post_terms: {_e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database error"
         )
