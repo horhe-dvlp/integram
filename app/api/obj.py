@@ -56,6 +56,7 @@ async def create_object(payload: ObjectCreateRequest) -> ObjectCreateResponse:
 
         obj_id, res = row
 
+        print(res)
         # Успешное добавление
         if res == "1":
             return ObjectCreateResponse(
@@ -67,6 +68,7 @@ async def create_object(payload: ObjectCreateRequest) -> ObjectCreateResponse:
 
         # Повторяющийся объект при UNIQUE
         if res == "err_non_unique_val":
+            db_logger.info("ERROR NON UNIQUE VAL !!!!!!!!!!!!!!")
             return ObjectCreateResponse(
                 id=obj_id,
                 up=payload.up,

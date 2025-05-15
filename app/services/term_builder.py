@@ -30,7 +30,7 @@ def build_terms_from_rows(rows: List[Dict]) -> List[TermMetadata]:
                 "up": row.get("up", 0),
                 "type": row["base"],
                 "val": row["obj"],
-                "unique": row.get("uniq", 1),
+                "unique": 1 if row.get("uniq") else 0,
                 "reqs": []  # Placeholder, will be filled later
             }
 
