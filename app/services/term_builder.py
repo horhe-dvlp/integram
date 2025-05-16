@@ -38,9 +38,9 @@ def build_terms_from_rows(rows: List[Dict]) -> List[TermMetadata]:
         if row.get("req_id"):
             req = TermRequisite(
                 num=row.get("ord"),
-                id=row["req_id"],
+                id=str(row["req_id"]),
                 val=row.get("req_val"),
-                type=row.get("req_t"),
+                type=str(row.get("req_t")),
                 attrs=row.get("attrs"),
                 ref_id=row.get("ref_id"),
                 ref=row.get("ref_val"),

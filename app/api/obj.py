@@ -1,10 +1,10 @@
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Path
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 import json
 
 from app.auth.auth import verify_token
-from app.db.db import engine
+from app.db.db import engine, validate_table_exists
 from app.models.object import ObjectCreateRequest, ObjectCreateResponse
 from app.logger import db_logger
 
@@ -12,9 +12,10 @@ router = APIRouter()
 
 
 @router.post(
-    "/object", response_model=ObjectCreateResponse, dependencies=[Depends(verify_token)]
+    "/{db_name}/object", response_model=ObjectCreateResponse, dependencies=[Depends(verify_token)]
 )
-async def create_object(payload: ObjectCreateRequest) -> ObjectCreateResponse:
+async def create_object(payload: ObjectCreateRequest,
+                        db_name: str = Depends(validate_table_exists),) -> ObjectCreateResponse:
     """
     Create a new object of a given term type with specified attributes.
 
@@ -30,7 +31,7 @@ async def create_object(payload: ObjectCreateRequest) -> ObjectCreateResponse:
     query = text(
         """
         SELECT * FROM post_objects(:db, :up, :type, :attrs)
-    """
+        """
     )
 
     try:
@@ -38,7 +39,7 @@ async def create_object(payload: ObjectCreateRequest) -> ObjectCreateResponse:
             result = await conn.execute(
                 query,
                 {
-                    "db": "rep",
+                    "db": db_name,
                     "up": payload.up,
                     "type": payload.id,
                     "attrs": json.dumps(payload.attrs),
