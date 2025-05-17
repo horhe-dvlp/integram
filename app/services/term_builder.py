@@ -47,10 +47,11 @@ def build_terms_from_rows(rows: List[Dict]) -> List[TermMetadata]:
                 default_val=row.get("default_val"),
                 mods=row.get("mods"),
             )
+            
             reqs_by_term_id[term_id].append(req)
 
     # Combine base term info with its requisites
     return [
-        TermMetadata(**{**term_data, "reqs": reqs_by_term_id[term_id]})
+        TermMetadata(**{**term_data, "reqs": reqs_by_term_id[term_id]}).model_dump(exclude_none=True)
         for term_id, term_data in terms_by_id.items()
     ]

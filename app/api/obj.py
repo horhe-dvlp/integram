@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, status, Depends, Path
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 import json
@@ -57,39 +58,37 @@ async def create_object(payload: ObjectCreateRequest,
 
         obj_id, res = row
 
-        print(res)
         # Успешное добавление
         if res == "1":
-            return ObjectCreateResponse(
+            return JSONResponse(ObjectCreateResponse(
                 id=obj_id,
                 up=payload.up,
                 t=payload.id,
                 val=payload.attrs[f"t{payload.id}"],
-            )
+            ).model_dump(exclude_none=True))
 
         # Повторяющийся объект при UNIQUE
         if res == "err_non_unique_val":
-            db_logger.info("ERROR NON UNIQUE VAL !!!!!!!!!!!!!!")
             return ObjectCreateResponse(
                 id=obj_id,
                 up=payload.up,
                 t=payload.id,
                 val=payload.attrs[f"t{payload.id}"],
-                warning="The record already exists",
+                warning=res.upper(),
             )
 
         # Невалидный тип или реквизит
         if res.startswith("err_type_not_found") or res.startswith("err_invalid_ref"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid type or reference",
+                detail=res.upper(),
             )
 
         # Пустое значение
         if res == "err_empty_val":
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Empty object value",
+                detail=res.upper(),
             )
 
         db_logger.exception(
@@ -104,5 +103,5 @@ async def create_object(payload: ObjectCreateRequest,
     except SQLAlchemyError as _e:
         db_logger.exception(f"Database error while executing post_object: {_e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )

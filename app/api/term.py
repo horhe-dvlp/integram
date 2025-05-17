@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Path, HTTPException, Depends, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from typing import List
@@ -72,7 +73,7 @@ async def get_term_by_id(
     if not rows:
         raise HTTPException(status_code=404, detail=f"Term {term_id} not found")
 
-    return build_terms_from_rows(rows)[0]
+    return JSONResponse(build_terms_from_rows(rows)[0])
 
 
 @router.post(
@@ -113,8 +114,7 @@ async def create_term(payload: TermCreateRequest, db_name: str = Depends(validat
 
         if not row:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Empty response from stored procedure.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
         term_id, result_flag = row
@@ -130,11 +130,11 @@ async def create_term(payload: TermCreateRequest, db_name: str = Depends(validat
         db_logger.exception(f"Unexpected result from post_terms: {result_flag}")
 
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
     except SQLAlchemyError as _e:
         db_logger.exception(f"Database error while executing post_terms: {_e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
