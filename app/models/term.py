@@ -15,7 +15,7 @@ class TermRequisite(BaseModel):
     ref_id: Optional[str] = None  
     ref: Optional[str] = None  
     default_val: Optional[str] = None  
-    mods: Optional[List[str]] = None  
+    mods: Optional[List[str]] = []
     arr_id: Optional[str] = None  
 
 
