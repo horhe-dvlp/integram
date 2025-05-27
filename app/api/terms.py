@@ -1,16 +1,17 @@
 from fastapi import APIRouter, Path, HTTPException, Depends, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from sqlalchemy.exc import SQLAlchemyError
 from typing import List
 import json
 
 from app.db.db import engine, load_sql, validate_table_exists
-from app.models.term import *
+from app.models.terms import *
 from app.services.term_builder import build_terms_from_rows
 from app.auth.auth import verify_token
 from app.logger import db_logger
 from app.settings import settings
+
 
 
 router = APIRouter()
@@ -255,3 +256,63 @@ async def patch_term(
             exclude_none=True
         )
     )
+
+@router.delete(
+    "/{db_name}/terms/{term_id}",
+    response_model=DeleteTermResponse,
+    dependencies=[Depends(verify_token)],
+)
+async def delete_term(
+    db_name: str = Path(..., description="Database name"),
+    term_id: int = Path(..., description="ID of the term to delete"),
+):
+    """
+    Deletes a term and all its children (via `up = term_id`).
+    Step 1: calls delete_terms(...) to check and delete base term.
+    Step 2: collects children recursively and deletes them in Python.
+    """
+    async with engine.begin() as conn:  # type: AsyncConnection
+
+        #1
+        sql = text("SELECT delete_terms(:db, :term_id)")
+        result = await conn.execute(sql, {"db": db_name, "term_id": term_id})
+        res = result.scalar_one_or_none()
+
+        if res == "err_term_not_found":
+            raise HTTPException(status_code=404, detail="Term not found")
+
+        if res == "err_term_is_in_use":
+            return JSONResponse(
+                DeleteTermResponse(error="There are objects of this type").model_dump(exclude_none=True)
+            )
+
+        if res is None or res != "1":
+            return JSONResponse(
+                DeleteTermResponse(error="Unknown error during deletion").model_dump(exclude_none=True)
+            )
+
+        #2
+        subs = []
+        queue = [term_id]
+        idx = 0
+
+        while idx < len(queue):
+            parent = queue[idx]
+            sql = text(f"SELECT id FROM {db_name} WHERE up = :parent")
+            result = await conn.execute(sql, {"parent": parent})
+            children = result.mappings().all()
+            ids = [r["id"] for r in children]
+            queue.extend(ids)
+            subs.extend(ids)
+            idx += 1
+
+        #3
+        if subs:
+            stmt = text(f"DELETE FROM {db_name} WHERE id IN :ids").bindparams(
+                bindparam("ids", expanding=True)
+            )
+            await conn.execute(stmt, {"ids": subs})
+
+        return JSONResponse(
+            DeleteTermResponse(id=term_id, deleted_count=1 + len(subs)).model_dump(exclude_none=True)
+        )

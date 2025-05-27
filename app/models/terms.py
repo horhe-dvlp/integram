@@ -101,3 +101,9 @@ class PatchTermResponse(BaseModel):
     val: Optional[str] = Field(None, description="Updated name")
     errors: Optional[str] = None
     exists: Optional[int] = None
+    
+
+class DeleteTermResponse(BaseModel):
+    id: Optional[int] = Field(None, description="ID of the deleted term")
+    deleted_count: Optional[int] = Field(None, description="Number of terms deleted (including children)")
+    error: Optional[str] = Field(None, description="Error message, if any")
