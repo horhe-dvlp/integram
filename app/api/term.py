@@ -6,10 +6,11 @@ from typing import List
 import json
 
 from app.db.db import engine, load_sql, validate_table_exists
-from app.models.term import TermMetadata, TermCreateRequest, TermCreateResponse
+from app.models.term import *
 from app.services.term_builder import build_terms_from_rows
 from app.auth.auth import verify_token
 from app.logger import db_logger
+from app.settings import settings
 
 
 router = APIRouter()
@@ -17,7 +18,7 @@ router = APIRouter()
 
 @router.get(
     "/{db_name}/terms",
-    response_model=List[TermMetadata],
+    response_model=List[Term],
     dependencies=[Depends(verify_token)],
 )
 async def get_all_terms(
@@ -31,13 +32,45 @@ async def get_all_terms(
     Returns:
         List[TermMetadata]: A list of term metadata entries.
     """
-    sql = load_sql("get_term.sql", db=db_name, filter_clause="")
+    sql = load_sql("get_terms.sql", db=db_name)
 
     async with engine.connect() as conn:
         result = await conn.execute(text(sql))
         rows = result.mappings().all()
 
-    return JSONResponse(build_terms_from_rows(rows))
+    return JSONResponse([dict(row) for row in rows])
+
+
+@router.get(
+    "/{db_name}/terms/{term_id}",
+    response_model=Term,
+    dependencies=[Depends(verify_token)],
+)
+async def get_term(
+    term_id: int = Path(..., description="Term ID to fetch"),
+    db_name: str = Depends(validate_table_exists),
+):
+    """
+    Fetches data for a specific term by ID.
+
+    This endpoint returns data for a single term from the specified database,
+    only if it is a top-level term and is not referenced by other objects.
+    Authorization is required.
+
+    Args:
+        term_id (int): ID of the term to retrieve.
+        db_name (str): Database name, validated before execution.
+
+    Returns:
+        Term: A dictionary containing the term's ID, value, and base type.
+    """
+    sql = load_sql("get_term.sql", db=db_name, term_id=term_id)
+
+    async with engine.connect() as conn:
+        result = await conn.execute(text(sql))
+        rows = result.mappings().all()
+
+    return JSONResponse([dict(row) for row in rows])
 
 
 @router.get(
@@ -45,7 +78,7 @@ async def get_all_terms(
     response_model=TermMetadata,
     dependencies=[Depends(verify_token)],
 )
-async def get_term_by_id(
+async def get_metadata_by_id(
     term_id: int = Path(..., description="Term ID to fetch"),
     db_name: str = Depends(validate_table_exists),
 ):
@@ -64,7 +97,9 @@ async def get_term_by_id(
     Raises:
         HTTPException: If the term with given ID does not exist.
     """
-    sql = load_sql("get_term.sql", db=db_name, filter_clause="AND obj.id = :term_id")
+    sql = load_sql(
+        "get_metadata.sql", db=db_name, filter_clause="AND obj.id = :term_id"
+    )
 
     async with engine.connect() as conn:
         result = await conn.execute(text(sql), {"term_id": term_id})
@@ -77,9 +112,14 @@ async def get_term_by_id(
 
 
 @router.post(
-    "/{db_name}/terms", response_model=TermCreateResponse, dependencies=[Depends(verify_token)]
+    "/{db_name}/terms",
+    response_model=TermCreateResponse,
+    dependencies=[Depends(verify_token)],
 )
-async def create_term(payload: TermCreateRequest, db_name: str = Depends(validate_table_exists),) -> TermCreateResponse:
+async def create_term(
+    payload: TermCreateRequest,
+    db_name: str = Depends(validate_table_exists),
+) -> TermCreateResponse:
     """Create a new term or return an existing one if it already exists.
 
     Executes the `post_terms` stored procedure with provided parameters.
@@ -113,9 +153,7 @@ async def create_term(payload: TermCreateRequest, db_name: str = Depends(validat
             row = result.fetchone()
 
         if not row:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         term_id, result_flag = row
 
@@ -129,12 +167,91 @@ async def create_term(payload: TermCreateRequest, db_name: str = Depends(validat
 
         db_logger.exception(f"Unexpected result from post_terms: {result_flag}")
 
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     except SQLAlchemyError as _e:
         db_logger.exception(f"Database error while executing post_terms: {_e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@router.patch(
+    "/{db_name}/terms/{term_id}",
+    response_model=PatchTermResponse,
+    dependencies=[Depends(verify_token)],
+)
+async def patch_term(
+    db_name: str = Path(..., description="Database name"),
+    term_id: int = Path(..., description="ID of the term to update"),
+    payload: PatchTermRequest = ...,
+):
+    """
+    Updates the name or base type of a term. If a term with the same name already exists,
+    returns an error and its ID. Otherwise, applies the update and handles modifiers.
+    """
+    sql = text("SELECT * FROM patch_terms(:db, :term_id, :value, :base)")
+
+    async with engine.begin() as conn:  # type: AsyncConnection
+        result = await conn.execute(
+            sql,
+            {
+                "db": db_name,
+                "term_id": term_id,
+                "value": payload.val,
+                "base": payload.t,
+            },
         )
+        row = result.mappings().fetchone()
+        print(row)
+
+        if not row or row["res"] is None:
+            return JSONResponse(
+                status_code=400, content={"errors": "Unknown error during update."}
+            )
+
+        if row["res"] == "err_term_name_exists":
+            return JSONResponse(
+                PatchTermResponse(id=row["exid"], errors=row["res"]).model_dump(
+                    exclude_none=True
+                )
+            )
+
+        # Обработка модификаторов
+        if payload.__pydantic_extra__:
+            vals = list(payload.__pydantic_extra__.keys())
+            placeholders = ",".join([f"'{v.upper()}'" for v in vals])
+            print(f"Placeholders: {placeholders}")
+            mod_query = (
+                f"SELECT id, val FROM {db_name} "
+                f"WHERE val IN ({placeholders}) AND t=0 AND up=0"
+            )
+            mod_rows = await conn.execute(text(mod_query))
+            mods = mod_rows.mappings().all()
+            print(f"Modifiers found: {mods}")
+            for mod in mods:
+                mid, mval = mod["id"], mod["val"]
+                await conn.execute(
+                    text(f"DELETE FROM {db_name} WHERE t=:t AND up=:up"),
+                    {"t": mid, "up": term_id},
+                )
+                mod_val = payload.__pydantic_extra__.get(mval.lower(), None)
+                print(f"Modifier value for {mval}: {mod_val}")
+                if mod_val is None or mod_val == "":
+                    continue
+                if mval.upper() in settings.BOOLEAN_MODIFIERS:
+                    await conn.execute(
+                        text(f"INSERT INTO {db_name}(up, t) VALUES(:up, :t)"),
+                        {"up": term_id, "t": mid},
+                    )
+                else:
+                    await conn.execute(
+                        text(
+                            f"INSERT INTO {db_name}(up, t, val) VALUES(:up, :t, :val)"
+                        ),
+                        {"up": term_id, "t": mid, "val": mod_val},
+                    )
+
+    return JSONResponse(
+        PatchTermResponse(id=term_id, t=payload.t, val=payload.val).model_dump(
+            exclude_none=True
+        )
+    )
