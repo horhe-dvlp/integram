@@ -203,7 +203,7 @@ async def delete_object(
     
 
 @router.get(
-    "/{db_name}/objects/{object_id}",
+    "/{db_name}/object/{object_id}",
     dependencies=[Depends(verify_token)]
 )
 async def get_object(
