@@ -9,11 +9,12 @@ from app.db.db import engine, load_sql, validate_table_exists
 from app.models.terms import *
 from app.services.term_builder import build_terms_from_rows
 from app.auth.auth import verify_token
-from app.logger import db_logger
+from app.logger import setup_logger
 from app.settings import settings
 
 
 router = APIRouter()
+logger = setup_logger()
 
 
 @router.get(
@@ -188,12 +189,12 @@ async def create_term(
                 id=term_id, t=payload.t, val=payload.val, warnings="Term already exists"
             )
 
-        db_logger.exception(f"Unexpected result from post_terms: {result_flag}")
+        logger.exception(f"Unexpected result from post_terms: {result_flag}")
 
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     except SQLAlchemyError as _e:
-        db_logger.exception(f"Database error while executing post_terms: {_e}")
+        logger.exception(f"Database error while executing post_terms: {_e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

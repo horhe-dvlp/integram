@@ -7,10 +7,11 @@ import json
 from app.auth.auth import verify_token
 from app.db.db import engine, validate_table_exists, load_sql
 from app.models.objects import *
-from app.logger import db_logger
+from app.logger import setup_logger
 
 
 router = APIRouter()
+logger = setup_logger
 
 
 @router.post(
@@ -50,7 +51,7 @@ async def create_object(payload: ObjectCreateRequest,
             row = result.fetchone()
 
         if not row:
-            db_logger.exception(
+            logger.exception(
                 f"Empty response from post_objects: id={payload.id}, up={payload.up}, attrs_keys={list(payload.attrs.keys())}"
             )
             raise HTTPException(
@@ -89,7 +90,7 @@ async def create_object(payload: ObjectCreateRequest,
                 detail=res.upper(),
             )
 
-        db_logger.exception(
+        logger.exception(
             f"Unexpected response from post_objects: res='{res}', id={payload.id}, up={payload.up}, attrs_keys={list(payload.attrs.keys())}"
         )
 
@@ -99,7 +100,7 @@ async def create_object(payload: ObjectCreateRequest,
         )
 
     except SQLAlchemyError as _e:
-        db_logger.exception(f"Database error while executing post_object: {_e}")
+        logger.exception(f"Database error while executing post_object: {_e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
@@ -306,7 +307,6 @@ async def get_term_objects(
             header.append(f)
             header_map[row.req_id] = f
             
-
     objects = []
     for obj in object_rows:
         row = {}
@@ -314,7 +314,6 @@ async def get_term_objects(
             reqs_sql = text(load_sql("get_object_reqs.sql", db=db_name, obj_id=obj.id))
             reqs_rows = await conn.execute(reqs_sql)
             reqs_rows = reqs_rows.fetchall()
-            print(f"REQS ROWS FOR {obj.id}:", reqs_rows)
             if reqs_rows:
                 for req_row in reqs_rows:
                     if req_row:
