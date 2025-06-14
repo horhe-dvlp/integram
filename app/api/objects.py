@@ -7,18 +7,21 @@ import json
 from app.auth.auth import verify_token
 from app.db.db import engine, validate_table_exists, load_sql
 from app.models.objects import *
-from app.logger import setup_logger
+from app.logger import db_logger
+from app.services.ErrorManager import error_manager as em
 
 
 router = APIRouter()
-logger = setup_logger
 
 
 @router.post(
-    "/{db_name}/objects", response_model=ObjectCreateResponse, dependencies=[Depends(verify_token)]
+    "/{db_name}/objects",
+    response_model=ObjectCreateResponse,
 )
-async def create_object(payload: ObjectCreateRequest,
-                        db_name: str = Depends(validate_table_exists),) -> ObjectCreateResponse:
+async def create_object(
+    payload: ObjectCreateRequest,
+    db_name: str = Depends(validate_table_exists),
+) -> ObjectCreateResponse:
     """
     Create a new object of a given term type with specified attributes.
 
@@ -31,11 +34,7 @@ async def create_object(payload: ObjectCreateRequest,
     Raises:
         HTTPException: For invalid parameters or unexpected DB errors.
     """
-    query = text(
-        """
-        SELECT * FROM post_objects(:db, :up, :type, :attrs)
-        """
-    )
+    query = text("SELECT * FROM post_objects(:db, :up, :type, :attrs)")
 
     try:
         async with engine.begin() as conn:
@@ -51,65 +50,52 @@ async def create_object(payload: ObjectCreateRequest,
             row = result.fetchone()
 
         if not row:
-            logger.exception(
+            db_logger.exception(
                 f"Empty response from post_objects: id={payload.id}, up={payload.up}, attrs_keys={list(payload.attrs.keys())}"
             )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            raise HTTPException(status_code=500, detail="Empty DB response")
 
         obj_id, res = row
 
         if res == "1":
-            return JSONResponse(ObjectCreateResponse(
-                id=obj_id,
-                up=payload.up,
-                t=payload.id,
-                val=payload.attrs[f"t{payload.id}"],
-            ).model_dump(exclude_none=True))
+            return JSONResponse(
+                ObjectCreateResponse(
+                    id=obj_id,
+                    up=payload.up,
+                    t=payload.id,
+                    val=payload.attrs.get(f"t{payload.id}"),
+                ).model_dump(exclude_none=True)
+            )
 
+        status_code, message = em.get_status_and_message(res) or (None, None)
 
-        if res == "err_non_unique_val":
+        if status_code == 200:
             return ObjectCreateResponse(
                 id=obj_id,
                 up=payload.up,
                 t=payload.id,
-                val=payload.attrs[f"t{payload.id}"],
-                warning=res.upper(),
+                val=payload.attrs.get(f"t{payload.id}"),
+                warning=message,
             )
 
-        if res.startswith("err_type_not_found") or res.startswith("err_invalid_ref"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=res.upper(),
+        if status_code:
+            em.raise_if_error(
+                res, log_context=f"POST object t={payload.id} in {db_name}"
             )
 
-        if res == "err_empty_val":
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=res.upper(),
-            )
-
-        logger.exception(
+        db_logger.exception(
             f"Unexpected response from post_objects: res='{res}', id={payload.id}, up={payload.up}, attrs_keys={list(payload.attrs.keys())}"
         )
+        raise HTTPException(status_code=500, detail="Unexpected database response")
 
-
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-
-    except SQLAlchemyError as _e:
-        logger.exception(f"Database error while executing post_object: {_e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+    except SQLAlchemyError as e:
+        db_logger.exception(f"Database error while executing post_object: {e}")
+        raise HTTPException(status_code=500, detail="Database error")
 
 
 @router.patch(
     "/{db_name}/objects/{object_id}",
     response_model=PatchObjectResponse,
-    dependencies=[Depends(verify_token)],
 )
 async def patch_object(
     object_id: int = Path(..., description="ID of the object to patch"),
@@ -127,8 +113,7 @@ async def patch_object(
     Returns:
         PatchObjectResponse: Update result with warnings or errors if any.
     """
-    print("RAW PAYLOAD:", payload)
-    print("EXTRA:", payload.__pydantic_extra__)
+    attrs = payload.get_payload()
 
     try:
         async with engine.begin() as conn:
@@ -137,35 +122,38 @@ async def patch_object(
                 {
                     "db": db_name,
                     "id": object_id,
-                    "attrs": json.dumps(payload.get_payload(), ensure_ascii=False),
+                    "attrs": json.dumps(attrs, ensure_ascii=False),
                 },
             )
-            row = result.scalar_one_or_none()
+            res = result.scalar_one_or_none()
 
     except SQLAlchemyError as e:
+        db_logger.exception(f"DB error while patching object {object_id} in {db_name}")
         raise HTTPException(status_code=500, detail="Database error")
 
-    response = {"id": object_id, "val": next(iter(payload.get_payload().values()), None)}
+    if res is None:
+        db_logger.warning(
+            f"PATCH failed: no response from DB for object_id={object_id}"
+        )
+        raise HTTPException(status_code=500, detail="Empty DB response")
 
-    error_map = {
-        "warn_record_exists": ("warnings", "The record already exists"),
-        "err_non_unique_val": ("error", "Value is not unique"),
-        "err_empty_val": ("error", "Empty value"),
-        "err_invalid_ref": ("error", "Invalid reference"),
-    }
+    val = list(attrs.values())[0] if len(attrs) == 1 else None
 
-    for key in error_map:
-        if row and row.startswith(key):
-            field, message = error_map[key]
-            response[field] = message
-            break
+    response = PatchObjectResponse(id=object_id, val=val)
 
-    return JSONResponse(PatchObjectResponse(**response).model_dump(exclude_none=True))
+    status_code, message = em.get_status_and_message(res) or (None, None)
+
+    if status_code == 200:
+        response.warning = message
+    elif status_code:
+        em.raise_if_error(res, log_context=f"PATCH object {object_id} in {db_name}")
+
+    return JSONResponse(response.model_dump(exclude_none=True))
+
 
 @router.delete(
     "/{db_name}/objects/{object_id}",
     response_model=DeleteObjectResponse,
-    dependencies=[Depends(verify_token)],
 )
 async def delete_object(
     db_name: str = Path(..., description="Database name"),
@@ -175,34 +163,29 @@ async def delete_object(
     Deletes an object and its nested records recursively.
     Validates references and ensures the object is not metadata.
     """
-    async with engine.begin() as conn:
-        sql = text("SELECT delete_object(:db, :id)")
-        result = await conn.execute(sql, {"db": db_name, "id": object_id})
-        res = result.scalar_one_or_none()
-
-        if res is None:
-            raise HTTPException(status_code=500, detail="Unexpected DB error")
-
-        if res == "err_obj_not_found":
-            raise HTTPException(status_code=404, detail="Object not found")
-        if res == "err_is_metadata":
-            raise HTTPException(status_code=400, detail="Cannot delete metadata object")
-        if res.startswith("err_is_referenced"):
-            count = res.split(" ")[1] if " " in res else "unknown"
-            raise HTTPException(
-                status_code=400,
-                detail=f"Object is referenced ({count})"
+    try:
+        async with engine.begin() as conn:
+            result = await conn.execute(
+                text("SELECT delete_object(:db, :id)"),
+                {"db": db_name, "id": object_id},
             )
-        if res != "1":
-            raise HTTPException(status_code=400, detail=f"Unknown error: {res}")
+            res = result.scalar_one_or_none()
 
-        return DeleteObjectResponse(id=object_id)
-    
+    except SQLAlchemyError as e:
+        db_logger.exception(f"DB error during DELETE object {object_id} in {db_name}")
+        raise HTTPException(status_code=500, detail="Database error")
 
-@router.get(
-    "/{db_name}/object/{object_id}",
-    dependencies=[Depends(verify_token)]
-)
+    if res is None:
+        db_logger.error(f"DELETE returned NULL for object_id={object_id}")
+        raise HTTPException(status_code=500, detail="Unexpected DB error")
+
+    if res != "1":
+        em.raise_if_error(res, log_context=f"DELETE object {object_id} in {db_name}")
+
+    return DeleteObjectResponse(id=object_id)
+
+
+@router.get("/{db_name}/object/{object_id}")
 async def get_object(
     db_name: str = Depends(validate_table_exists),
     object_id: int = Path(..., description="Object ID to fetch"),
@@ -227,36 +210,46 @@ async def get_object(
             }
         }
     """
-    async with engine.connect() as conn:
-        sql_obj = load_sql("get_object.sql", db=db_name)
-        result = await conn.execute(text(sql_obj), {"object_id": object_id})
-        obj_row = result.mappings().fetchone()
-        if not obj_row:
-            raise HTTPException(status_code=404, detail=f"Object {object_id} not found")
+    try:
+        async with engine.connect() as conn:
+            sql_obj = text(load_sql("get_object.sql", db=db_name))
+            result = await conn.execute(sql_obj, {"object_id": object_id})
+            obj_row = result.mappings().fetchone()
 
-        obj = dict(obj_row)
-        term_type = obj["t"]
+            if not obj_row:
+                db_logger.info(f"Object {object_id} not found in DB {db_name}")
+                raise HTTPException(
+                    status_code=404, detail=f"Object {object_id} not found"
+                )
 
-        sql_reqs = text(load_sql("get_object_requisites.sql", db=db_name))
-        result = await conn.execute(sql_reqs, {
-            "object_id": object_id,
-            "type_id": term_type
-        })
-        rows = result.mappings().all()
-        print("ROWS:", rows)
-        reqs = {}
-        for row in rows:
-            req_id = str(row["req_id"])
-            if req_id == "0":
-                continue
-            reqs[req_id] = {
-                "type": row["ref_val"],
-                "value": row["ref_t"] if row["ref_t"] else row["req_val"]
-            }
+            obj = dict(obj_row)
+            term_type = obj["t"]
 
-        obj["reqs"] = reqs
-        return JSONResponse(obj)
-    
+            sql_reqs = text(load_sql("get_object_requisites.sql", db=db_name))
+            result = await conn.execute(
+                sql_reqs, {"object_id": object_id, "type_id": term_type}
+            )
+            rows = result.mappings().all()
+
+            reqs = {}
+            for row in rows:
+                req_id = str(row["req_id"])
+                if req_id == "0":
+                    continue
+
+                value = row["ref_t"] if row["ref_t"] is not None else row["req_val"]
+                reqs[req_id] = {
+                    "type": row["ref_val"],
+                    "value": value,
+                }
+
+            obj["reqs"] = reqs
+            return JSONResponse(obj)
+
+    except SQLAlchemyError as e:
+        db_logger.exception(f"DB error while fetching object {object_id} in {db_name}")
+        raise HTTPException(status_code=500, detail="Database error")
+
 
 @router.get("/{db_name}/objects/{term_id}", response_model=TermObjectsResponse)
 async def get_term_objects(
@@ -264,67 +257,89 @@ async def get_term_objects(
     term_id: int = Path(..., description="ID of the term"),
     parent_id: int = Query(1, alias="up", description="Parent ID"),
 ):
-    """_summary_
-
-    Args:
-        db_name (str, optional): _description_. Defaults to Path(..., description="Database name").
-        term_id (int, optional): _description_. Defaults to Path(..., description="ID of the term").
-        parent_id (int, optional): _description_. Defaults to Query(1, alias="up", description="Parent ID").
-
-    Raises:
-        HTTPException: _description_
-
-    Returns:
-        _type_: _description_
     """
-    async with engine.begin() as conn:
-        meta_sql = text(load_sql("get_term_metadata.sql", db=db_name, term_id=term_id))
-        objs_sql = text(load_sql("get_term_objects.sql", db=db_name, term_id=term_id, parent_id=parent_id))
-        
-        meta_rows = await conn.execute(meta_sql)
-        object_rows = await conn.execute(objs_sql)
-
-
-        meta_rows = meta_rows.fetchall()
-        object_rows = object_rows.fetchall()
-
-
-    if not meta_rows:
-        raise HTTPException(status_code=404, detail="Term not found")
-
-    header_map = {}
-    header = []
-    for row in meta_rows:
-        if row.req_id not in header_map:
-            f = HeaderField(
-                t=row.req_t,
-                name=row.req_val,
-                base=row.ref_base or row.req_t,
-                ref=row.ref_id,
-                modifiers=[m.encode("utf-8").decode("unicode_escape") for m in (row.mods or [])],
-                original_name=row.ref_val,
+    Returns:
+        {
+            "t": 32,
+            "name": "User",
+            "base": 3,
+            "header": [...],
+            "objects": [...]
+        }
+    """
+    try:
+        async with engine.connect() as conn:
+            meta_sql = text(
+                load_sql("get_term_metadata.sql", db=db_name, term_id=term_id)
             )
-            header.append(f)
-            header_map[row.req_id] = f
-            
-    objects = []
-    for obj in object_rows:
-        row = {}
-        async with engine.begin() as conn:
-            reqs_sql = text(load_sql("get_object_reqs.sql", db=db_name, obj_id=obj.id))
-            reqs_rows = await conn.execute(reqs_sql)
-            reqs_rows = reqs_rows.fetchall()
-            if reqs_rows:
-                for req_row in reqs_rows:
-                    if req_row:
-                        row[header_map[req_row[1]].name] = req_row[0]
-                        
-            objects.append(ObjectRow(id=obj.id, up=obj.up, val=obj.val, reqs=row))
+            objs_sql = text(
+                load_sql(
+                    "get_term_objects.sql",
+                    db=db_name,
+                    term_id=term_id,
+                    parent_id=parent_id,
+                )
+            )
+            reqs_template = load_sql("get_object_reqs.sql", db=db_name, obj_id=":obj_id")
 
-    return JSONResponse(TermObjectsResponse(
-        t=meta_rows[0].id,
-        name=meta_rows[0].obj,
-        base=meta_rows[0].base,
-        header=header,
-        objects=objects,
-    ).model_dump(exclude_none=True))
+            meta_rows = (await conn.execute(meta_sql)).fetchall()
+            object_rows = (await conn.execute(objs_sql)).fetchall()
+
+            if not meta_rows:
+                raise HTTPException(status_code=404, detail="Term not found")
+
+            # --- Header fields
+            header_map = {}
+            header = []
+            for row in meta_rows:
+                if row.req_id not in header_map:
+                    field = HeaderField(
+                        id = row.req_id,
+                        t=row.req_t,
+                        name=row.req_val,
+                        base=row.ref_base or row.req_t,
+                        ref=row.ref_id,
+                        modifiers=[
+                            m.encode("utf-8").decode("unicode_escape")
+                            for m in (row.mods or [])
+                        ],
+                        original_name=row.ref_val,
+                    )
+                    header.append(field)
+                    header_map[row.req_id] = field
+
+            # --- Objects and their requisites
+            objects = []
+            for obj in object_rows:
+                reqs_sql = text(reqs_template.replace(":obj_id", str(obj.id)))
+                reqs_rows = (await conn.execute(reqs_sql)).fetchall()
+
+                row_data = {}
+                for req_row in reqs_rows:
+                    req_id = req_row[1]
+                    field = header_map.get(req_id)
+                    if field:
+                        row_data[field.name] = req_row[0]
+
+                objects.append(
+                    ObjectRow(
+                        id=obj.id,
+                        up=obj.up,
+                        val=obj.val,
+                        reqs=row_data,
+                    )
+                )
+
+            # --- Response
+            response = TermObjectsResponse(
+                t=meta_rows[0].id,
+                name=meta_rows[0].obj,
+                base=meta_rows[0].base,
+                header=header,
+                objects=objects,
+            )
+            return JSONResponse(response.model_dump(exclude_none=True))
+
+    except SQLAlchemyError as e:
+        db_logger.exception(f"DB error while fetching term {term_id} in {db_name}")
+        raise HTTPException(status_code=500, detail="Database error")
