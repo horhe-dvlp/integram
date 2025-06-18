@@ -1,13 +1,15 @@
-# app/core/error_manager.py
-
 from fastapi import HTTPException, status
-from app.logger import db_logger as logger
+from app.logger import setup_logger
 
 
 class ErrorManager:
     _instance = None
+    logger = setup_logger(__name__)
 
     _KNOWN_ERRORS: dict[str, tuple[int, str]] = {
+        "1": (status.HTTP_200_OK, None),
+        "warn_term_exists": (status.HTTP_200_OK, "Term already exists"),
+        "err_term_not_found": (status.HTTP_404_NOT_FOUND, "Term not found"),
         "err_empty_val": (status.HTTP_422_UNPROCESSABLE_ENTITY, "Empty value"),
         "err_non_unique_val": (status.HTTP_200_OK, "Value is not unique"),
         "err_type_not_found": (status.HTTP_400_BAD_REQUEST, "Invalid type"),
@@ -16,6 +18,7 @@ class ErrorManager:
         "err_obj_not_found": (status.HTTP_404_NOT_FOUND, "Object not found"),
         "err_is_metadata": (status.HTTP_400_BAD_REQUEST, "Object is metadata"),
         "err_is_referenced": (status.HTTP_400_BAD_REQUEST, "Object is referenced"),
+        
     }
 
     def __new__(cls):
@@ -31,11 +34,11 @@ class ErrorManager:
         for prefix, (code, message) in self._KNOWN_ERRORS.items():
             if res.startswith(prefix):
                 if code >= 400:
-                    logger.warning(f"{log_context} — DB returned known error: {res}")
+                    self.logger.warning(f"{log_context} — DB returned known error: {res}")
                     raise HTTPException(status_code=code, detail=message)
                 return  # known benign (e.g., 200 OK warning)
         
-        logger.error(f"{log_context} — Unknown DB error: {res}")
+        self.logger.error(f"{log_context} — Unknown DB error: {res}")
         raise HTTPException(status_code=500, detail="Unexpected database response")
 
     def get_status_and_message(self, res: str) -> tuple[int, str] | None:

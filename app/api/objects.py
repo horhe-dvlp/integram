@@ -4,14 +4,14 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 import json
 
-from app.auth.auth import verify_token
 from app.db.db import engine, validate_table_exists, load_sql
 from app.models.objects import *
-from app.logger import db_logger
+from app.logger import setup_logger
 from app.services.ErrorManager import error_manager as em
 
 
 router = APIRouter()
+logger = setup_logger(__name__)
 
 
 @router.post(
@@ -50,7 +50,7 @@ async def create_object(
             row = result.fetchone()
 
         if not row:
-            db_logger.exception(
+            logger.exception(
                 f"Empty response from post_objects: id={payload.id}, up={payload.up}, attrs_keys={list(payload.attrs.keys())}"
             )
             raise HTTPException(status_code=500, detail="Empty DB response")
@@ -83,13 +83,13 @@ async def create_object(
                 res, log_context=f"POST object t={payload.id} in {db_name}"
             )
 
-        db_logger.exception(
+        logger.exception(
             f"Unexpected response from post_objects: res='{res}', id={payload.id}, up={payload.up}, attrs_keys={list(payload.attrs.keys())}"
         )
         raise HTTPException(status_code=500, detail="Unexpected database response")
 
     except SQLAlchemyError as e:
-        db_logger.exception(f"Database error while executing post_object: {e}")
+        logger.exception(f"Database error while executing post_object: {e}")
         raise HTTPException(status_code=500, detail="Database error")
 
 
@@ -128,13 +128,11 @@ async def patch_object(
             res = result.scalar_one_or_none()
 
     except SQLAlchemyError as e:
-        db_logger.exception(f"DB error while patching object {object_id} in {db_name}")
+        logger.exception(f"DB error while patching object {object_id} in {db_name}")
         raise HTTPException(status_code=500, detail="Database error")
 
     if res is None:
-        db_logger.warning(
-            f"PATCH failed: no response from DB for object_id={object_id}"
-        )
+        logger.warning(f"PATCH failed: no response from DB for object_id={object_id}")
         raise HTTPException(status_code=500, detail="Empty DB response")
 
     val = list(attrs.values())[0] if len(attrs) == 1 else None
@@ -172,11 +170,11 @@ async def delete_object(
             res = result.scalar_one_or_none()
 
     except SQLAlchemyError as e:
-        db_logger.exception(f"DB error during DELETE object {object_id} in {db_name}")
+        logger.exception(f"DB error during DELETE object {object_id} in {db_name}")
         raise HTTPException(status_code=500, detail="Database error")
 
     if res is None:
-        db_logger.error(f"DELETE returned NULL for object_id={object_id}")
+        logger.error(f"DELETE returned NULL for object_id={object_id}")
         raise HTTPException(status_code=500, detail="Unexpected DB error")
 
     if res != "1":
@@ -217,7 +215,7 @@ async def get_object(
             obj_row = result.mappings().fetchone()
 
             if not obj_row:
-                db_logger.info(f"Object {object_id} not found in DB {db_name}")
+                logger.info(f"Object {object_id} not found in DB {db_name}")
                 raise HTTPException(
                     status_code=404, detail=f"Object {object_id} not found"
                 )
@@ -247,7 +245,7 @@ async def get_object(
             return JSONResponse(obj)
 
     except SQLAlchemyError as e:
-        db_logger.exception(f"DB error while fetching object {object_id} in {db_name}")
+        logger.exception(f"DB error while fetching object {object_id} in {db_name}")
         raise HTTPException(status_code=500, detail="Database error")
 
 
@@ -280,7 +278,9 @@ async def get_term_objects(
                     parent_id=parent_id,
                 )
             )
-            reqs_template = load_sql("get_object_reqs.sql", db=db_name, obj_id=":obj_id")
+            reqs_template = load_sql(
+                "get_object_reqs.sql", db=db_name, obj_id=":obj_id"
+            )
 
             meta_rows = (await conn.execute(meta_sql)).fetchall()
             object_rows = (await conn.execute(objs_sql)).fetchall()
@@ -294,7 +294,7 @@ async def get_term_objects(
             for row in meta_rows:
                 if row.req_id not in header_map:
                     field = HeaderField(
-                        id = row.req_id,
+                        id=row.req_id,
                         t=row.req_t,
                         name=row.req_val,
                         base=row.ref_base or row.req_t,
@@ -341,5 +341,5 @@ async def get_term_objects(
             return JSONResponse(response.model_dump(exclude_none=True))
 
     except SQLAlchemyError as e:
-        db_logger.exception(f"DB error while fetching term {term_id} in {db_name}")
+        logger.exception(f"DB error while fetching term {term_id} in {db_name}")
         raise HTTPException(status_code=500, detail="Database error")
