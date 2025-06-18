@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, Path, Body
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-import json
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.auth.auth import verify_token
 from app.db.db import engine, validate_table_exists
@@ -9,8 +9,11 @@ from app.models.references import (
     CreateReferenceRequest,
     CreateReferenceResponse,
 )
+from app.services.ErrorManager import error_manager as em
+from app.logger import setup_logger
 
 router = APIRouter()
+logger = setup_logger(__name__)
 
 @router.post(
     "/{db_name}/references",
@@ -28,25 +31,32 @@ async def create_reference(
     Returns:
         JSON containing ID of created or existing reference.
     """
-    sql = text("SELECT * FROM post_references(:db, :term_id)")
+    
+    try:
+        async with engine.begin() as conn:
+            result = await conn.execute(
+                text("SELECT * FROM post_references(:db, :term_id)"),
+                {"db": db_name, "term_id": payload.id}
+            )
+            row = result.mappings().fetchone()
 
-    async with engine.begin() as conn:  # type: AsyncConnection
-        result = await conn.execute(sql, {
-            "db": db_name,
-            "term_id": payload.id
-        })
-        row = result.mappings().fetchone()
+    except SQLAlchemyError as e:
+        logger.exception(f"Database error while creating reference to term {payload.id}")
+        raise HTTPException(status_code=500, detail="Database error")
 
     if not row or row["res"] is None:
-        return JSONResponse(status_code=400, content={"errors": "Unknown error during reference creation."})
+        logger.error(f"Reference creation failed, no result for term {payload.id}")
+        raise HTTPException(status_code=400, detail="Unknown error during reference creation")
 
-    response = CreateReferenceResponse(id=row["newid"])
+    result_flag = row["res"]
+    ref_id = row["newid"]
+    
+    status_code, message = em.get_status_and_message(result_flag) or (None, None)
 
-    if row["res"] == "warn_ref_exists":
-        response.warnings = "Reference already exists"
-    elif row["res"] == "err_incorrect_term":
-        response.errors = "Incorrect term ID"
-    elif row["res"] != "1":
-        response.errors = f"Unexpected error: {row['res']}"
+    if status_code == 200:
+        return JSONResponse(CreateReferenceResponse(id=ref_id, warnings=message).model_dump(exclude_none=True), status_code=status_code)
 
-    return response
+    if status_code:
+        em.raise_if_error(result_flag, log_context=f"POST /references term_id={payload.id}")
+
+    return JSONResponse(CreateReferenceResponse(id=ref_id).model_dump(exclude_none=True))
