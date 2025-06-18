@@ -22,7 +22,6 @@ logger = setup_logger(__name__)
 @router.post(
     "/{db_name}/requisites",
     response_model=AddRequisiteResponse,
-    dependencies=[Depends(verify_token)],
 )
 async def post_requisite(
     db_name: str = Depends(validate_table_exists),

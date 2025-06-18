@@ -9,16 +9,27 @@ class ErrorManager:
     _KNOWN_ERRORS: dict[str, tuple[int, str]] = {
         "1": (status.HTTP_200_OK, None),
         "warn_term_exists": (status.HTTP_200_OK, "Term already exists"),
+        "warn_req_exists": (status.HTTP_200_OK, "Requisite already exists"),
+        "warn_ref_exists": (status.HTTP_200_OK, "Reference already exists"),
+        "warn_record_exists": (status.HTTP_200_OK, "Record already exists"),
         "err_term_not_found": (status.HTTP_404_NOT_FOUND, "Term not found"),
+        "err_req_not_found": (status.HTTP_404_NOT_FOUND, "Requisite not found"),
+        "err_term_name_exists": (status.HTTP_409_CONFLICT, "Term name already exists"),
         "err_empty_val": (status.HTTP_422_UNPROCESSABLE_ENTITY, "Empty value"),
-        "err_non_unique_val": (status.HTTP_200_OK, "Value is not unique"),
+        "err_non_unique_val": (status.HTTP_409_CONFLICT, "Value is not unique"),
         "err_type_not_found": (status.HTTP_400_BAD_REQUEST, "Invalid type"),
         "err_invalid_ref": (status.HTTP_400_BAD_REQUEST, "Invalid reference"),
-        "warn_record_exists": (status.HTTP_200_OK, "Record already exists"),
         "err_obj_not_found": (status.HTTP_404_NOT_FOUND, "Object not found"),
-        "err_is_metadata": (status.HTTP_400_BAD_REQUEST, "Object is metadata"),
-        "err_is_referenced": (status.HTTP_400_BAD_REQUEST, "Object is referenced"),
-        
+        "err_is_metadata": (
+            status.HTTP_400_BAD_REQUEST,
+            "Object is metadata and cannot be deleted",
+        ),
+        "err_is_referenced": (
+            status.HTTP_400_BAD_REQUEST,
+            "Object is referenced by other entities",
+        ),
+        "err_incorrect_term": (status.HTTP_400_BAD_REQUEST, "Incorrect term"),
+        "err_term_is_in_use": (status.HTTP_409_CONFLICT, "Term is currently in use"),
     }
 
     def __new__(cls):
@@ -34,10 +45,12 @@ class ErrorManager:
         for prefix, (code, message) in self._KNOWN_ERRORS.items():
             if res.startswith(prefix):
                 if code >= 400:
-                    self.logger.warning(f"{log_context} — DB returned known error: {res}")
+                    self.logger.warning(
+                        f"{log_context} — DB returned known error: {res}"
+                    )
                     raise HTTPException(status_code=code, detail=message)
                 return  # known benign (e.g., 200 OK warning)
-        
+
         self.logger.error(f"{log_context} — Unknown DB error: {res}")
         raise HTTPException(status_code=500, detail="Unexpected database response")
 
@@ -50,7 +63,6 @@ class ErrorManager:
     def is_warning(self, res: str) -> bool:
         data = self.get_status_and_message(res)
         return data is not None and data[0] == status.HTTP_200_OK
-
 
 
 error_manager = ErrorManager()
