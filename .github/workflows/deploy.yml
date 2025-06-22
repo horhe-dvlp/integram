@@ -1,4 +1,4 @@
-name: FastAPI CI/CD
+name: Integram CI/CD
 
 on:
   push:
@@ -33,7 +33,7 @@ jobs:
     # needs: test
     on:
       workflow_dispatch:
-      
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
