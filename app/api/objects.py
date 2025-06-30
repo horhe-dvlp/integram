@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends, Path, Query
+from fastapi import APIRouter, HTTPException, status, Depends, Path, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text, bindparam, String, Integer, JSON
 from sqlalchemy.exc import SQLAlchemyError
@@ -6,8 +6,9 @@ import json
 
 from app.db.db import engine, validate_table_exists, load_sql
 from app.models.objects import *
+from app.models.filter import FilterQuery
 from app.logger import setup_logger
-from app.services.ErrorManager import error_manager as em
+from app.services.error_manager import error_manager as em
 from app.services.object_by_term import (
     _build_header,
     _detect_ordered_reqs,
@@ -16,6 +17,7 @@ from app.services.object_by_term import (
     _fetch_ordered_reqs,
     _build_reqs_map,
 )
+from app.services.filter_builder import FilterBuilder
 
 
 router = APIRouter()
@@ -267,9 +269,11 @@ async def get_object(
 
 @router.get("/{db_name}/objects/{term_id}", response_model=TermObjectsResponse)
 async def get_term_objects(
+    request: Request,
     db_name: str = Path(..., description="Database name"),
     term_id: int = Path(..., description="ID of the term"),
     parent_id: int = Query(1, alias="up", description="Parent ID"),
+    filters: FilterQuery = Depends()
 ):
     """
     Returns:
@@ -281,6 +285,11 @@ async def get_term_objects(
             "objects": [...]
         }
     """
+    
+    filters = {
+        k: v for k, v in request.query_params.items()
+        if k.startswith("f")
+    }
     try:
         async with engine.connect() as conn:
             meta_rows = await _fetch_metadata(conn, db_name, term_id)
