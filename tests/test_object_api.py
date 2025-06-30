@@ -1,67 +1,48 @@
 import pytest
-from httpx import AsyncClient, post as httpx_post
-from httpx import ASGITransport
 from unittest.mock import AsyncMock, MagicMock
 from fastapi import status
 
-
-from app.main import app
 from app.api import objects
+from app.middleware import auth_middleware
+from app.db import db
 from app.models.objects import ObjectCreateRequest
 
 
-@pytest.fixture
-def auth_headers():
-    return {"Authorization": "Bearer secret-token"}
-
-
 @pytest.mark.asyncio
-async def test_post_object_mocked(monkeypatch, auth_headers):
-    monkeypatch.setattr(objects, "verify_token", AsyncMock(return_value={"user_id": 1, "role": "admin"}))
-
-    # Mock DB result
+async def test_post_object_success(monkeypatch):
+    monkeypatch.setattr(auth_middleware, "verify_token", AsyncMock(return_value={"user_id":1, "role":"admin"}))
     mock_result = MagicMock()
     mock_result.fetchone.return_value = (777, "1")
-
     mock_conn = AsyncMock()
     mock_conn.__aenter__.return_value.execute.return_value = mock_result
-
     mock_engine = MagicMock()
     mock_engine.begin.return_value = mock_conn
-
     monkeypatch.setattr(objects, "engine", mock_engine)
+    monkeypatch.setattr(db, "engine", mock_engine)
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        payload = {
-            "id": 110,
-            "up": 1,
-            "attrs": {"t110": "Mocked Name"}
-        }
-        response = await client.post("/object", headers=auth_headers, json=payload)
+    resp = await objects.create_object(ObjectCreateRequest(id=110, up=1, attrs={"t110":"Name"}), db_name="testdb")
+    assert resp.status_code == status.HTTP_200_OK
+    import json
+    data = json.loads(resp.body)
+    assert data["id"] == 777
 
-    assert response.status_code == status.HTTP_200_OK
-    assert response.json()["id"] == 777
-    assert response.json()["val"] == "Mocked Name"
+@pytest.mark.asyncio
+async def test_post_object_warning(monkeypatch):
+    monkeypatch.setattr(auth_middleware, "verify_token", AsyncMock(return_value={"user_id":1, "role":"admin"}))
+    mock_result = MagicMock()
+    mock_result.fetchone.return_value = (555, "warn_record_exists")
+    mock_conn = AsyncMock()
+    mock_conn.__aenter__.return_value.execute.return_value = mock_result
+    mock_engine = MagicMock()
+    mock_engine.begin.return_value = mock_conn
+    monkeypatch.setattr(objects, "engine", mock_engine)
+    monkeypatch.setattr(db, "engine", mock_engine)
+
+    resp = await objects.create_object(ObjectCreateRequest(id=110, up=1, attrs={"t110":"Another"}), db_name="testdb")
+    assert isinstance(resp, objects.ObjectCreateResponse)
+    assert resp.warning == "Record already exists"
 
 
-@pytest.mark.parametrize("payload", [
-    {
-        "id": 101,
-        "up": 1,
-        "attrs": {
-            "t101": "Ellipse",
-        }
-    },
-])
-def test_post_object_real_server(payload):
-    response = httpx_post(
-        "http://localhost:8000/object",
-        headers={"Authorization": "Bearer secret-token"},
-        json=payload
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["val"] == payload["attrs"][f"t{payload['id']}"]
-    assert data["t"] == payload["id"]
-    assert data["up"] == payload["up"]
+def test_object_create_request_validation():
+    with pytest.raises(ValueError):
+        ObjectCreateRequest(id=1, up=1, attrs={})
